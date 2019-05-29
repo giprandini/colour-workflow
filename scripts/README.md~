@@ -1,0 +1,8 @@
+
+#### Content
+
+- run_elemental-metals.py          --> input script to launch the ColourWorkflow (example for elemental metals)
+- run_intermetallics.py            --> input script to launch the ColourWorkflow (example for binary compounds of gold)
+- optical_constants.py             --> post-processing AiiDA script to calculate several optical constants, such as the reflectivity, and the colour coordinates starting from the dielectric function
+
+

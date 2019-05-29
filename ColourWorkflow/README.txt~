@@ -1,0 +1,14 @@
+
+
+INFOS:
+
+- AiiDA version: 0.7.0
+
+- Codes used by the workflow: Quantum ESPRESSO (pw.x) and SIMPLE code (simple.x and simple_ip.x of GWW package of Quantum ESPRESSO)
+
+The file 'colour.py' containing the AiiDA ColourWorkflow needs to be placed in the folder having local source path:
+~/git/aiida/aiida/workflows/user/{username}/
+
+The import of the workflow in the input scripts need to be modified according to the chosen {username} (e.g. see run_elemental-metals.py).
+
+

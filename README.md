@@ -26,7 +26,7 @@ scripts:
 
 - install and compile the Mitsuba renderer following the official documentation (https://www.mitsuba-renderer.org/) with the compilation flag SPECTRUM_SAMPLES = 30 in order to perform spectral rendering with 30 samples within the visible range
 - use the script mitsuba_spectra.py to obtain the 30 spectral samples starting from the previously computed IPA dielectric function 
-- perform the rendering using one the example scene freely available for the Mitsuba renderer (https://www.mitsuba-renderer.org/download)
+- perform the rendering using one of the example scenes freely available for the Mitsuba renderer (https://www.mitsuba-renderer.org/download)
 
 
 #### Acknowledgements

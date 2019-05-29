@@ -1,0 +1,351 @@
+#!/usr/bin/env runaiida
+# -*- coding: utf-8 -*-
+from copy import deepcopy
+
+'''
+==================================================================================================
+Input script to calculate the IPA dielectric function of elemental silver with the ColourWorkflow
+==================================================================================================
+
+sys.argv[1] = pw.x codename
+sys.argv[2] = simple.x codename
+sys.argv[3] = simple_ip.x codename
+sys.argv[4] = pseudopotential family name
+
+'''
+
+from time import sleep
+import numpy as np
+import sys, ase
+from aiida.common.example_helpers import test_and_get_code
+from aiida.orm import  DataFactory
+# from aiida.workflows.user.{username}.colour import ColourWorkflow
+from aiida.workflows.user.prandini.colour import ColourWorkflow
+
+StructureData = DataFactory('structure')
+KpointsData = DataFactory('array.kpoints')
+UpfData = DataFactory('upf')
+
+def validate_upf_family(pseudo_family, all_species):
+    """
+    Validate if the pseudo_family is correct.
+    """
+    elements = all_species
+    UpfData = DataFactory('upf')
+    valid_families = UpfData.get_upf_groups(filter_elements=elements)
+    valid_families_names = [family.name for family in valid_families]
+    if pseudo_family not in valid_families_names:
+        raise ValueError("Invalid pseudo family '{}'. "
+                         "Valid family names are: {}".format(
+            pseudo_family, ",".join(valid_families_names)))
+
+def get_Zvalence_from_pseudo(pseudo):
+     """
+     Extract the number of valence electrons from a pseudopotential
+     """
+     with open(pseudo.get_file_abs_path(),'r') as f:
+         lines=f.readlines()
+         for line in lines:
+             if 'valence' in line:
+                 try:
+                     return int(float(line.split("z_valence=\""
+                                             )[-1].split("\"")[0].strip()))
+                 except (ValueError, IndexError):
+                     try:
+                         return int(float(line.split("Z")[0].strip()))
+                     except (ValueError, IndexError):
+                         return None
+
+
+try:
+    pw_codename = sys.argv[1]
+except IndexError:
+    print >> sys.stderr, "The first parameter must be the pw code name"
+    sys.exit(1)
+
+try:
+    simple_codename = sys.argv[2]
+except IndexError:
+    print >> sys.stderr, "The second parameter must be the simple code name"
+    sys.exit(1)
+
+try:
+    shirley_codename = sys.argv[3]
+except IndexError:
+    print >> sys.stderr, "The third parameter must be the simple_ip code name"
+    sys.exit(1)
+
+element = 'Ag'
+valid_pseudo_groups = UpfData.get_upf_groups(filter_elements=element)
+try:
+    pseudo_family = sys.argv[4]
+except IndexError:
+    print >> sys.stderr, "The fourth parameter must be the pseudo family name. SG15 pseudopotential should be used for this example."
+    print >> sys.stderr, "Valid UPF families are:"
+    print >> sys.stderr, "\n".join("* {}".format(i.name) for i in valid_pseudo_groups)
+    sys.exit(1)
+try:
+    UpfData.get_upf_group(pseudo_family)
+except NotExistent:
+    print >> sys.stderr, "pseudo_family='{}',".format(pseudo_family)
+    print >> sys.stderr, "but no group with such a name found in the DB."
+    print >> sys.stderr, "Valid UPF groups are:"
+    print >> sys.stderr, ",".join(i.name for i in valid_pseudo_groups)
+    sys.exit(1)
+
+
+############################################################################
+## Set input parameters
+############################################################################
+
+send = True
+nscf_calculation_pk = None
+simple_calculation_pk = None
+dual = 4 # only norm-conseerving pseudopotential are supported by SIMPLE
+relaxation_scheme = 'scf'
+shirley_threshold = 0.0075
+nonlocal_commutator = True   # for simple.x and simple_ip.x
+wfc_cutoff = 55.0  # !!! converged wavefunction cutoff for SG15 pseudopotential
+# k-points
+pw_kpoints_mesh = [24,24,24]   # scf mesh
+nscf_kpoints_mesh = [2,2,2]    # nscf mesh
+interp_kmesh = [48,48,48]      # interpolated mesh
+
+# npools for nscf calculation
+nscf_npools = 1
+## write here custom scheduler commands to be used to launch SIMPLE code          
+custom_scheduler_commands = ''
+#custom_scheduler_commands = '#SBATCH --constraint=s6g1 \n#SBATCH  --mem=190000 \nexport OMP_NUM_THREADS=1'
+
+## Build FCC primitive cell for Ag
+b = 4.15/2.
+atomic_posit = [(0,0,0)]
+cell = [(0, b, b), (b, 0, b), (b, b, 0)]
+ase_atoms = ase.Atoms('Ag', positions=atomic_posit, cell=cell, pbc=True)
+structure = StructureData(ase=ase_atoms)
+structure.store()
+
+## validate
+pw_code = test_and_get_code(pw_codename,'quantumespresso.pw')
+test_and_get_code(simple_codename,'quantumespresso.simple')
+test_and_get_code(shirley_codename,'shirley')
+validate_upf_family(pseudo_family, structure.get_kind_names())
+
+default_mpi_procs = pw_code.get_remote_computer().get_default_mpiprocs_per_machine()
+# DFT resources
+dft_max_num_machines = 1
+dft_target_time_seconds = 60*60*1.0
+dft_max_time_seconds = dft_target_time_seconds*1.0
+
+# Simple resources
+simple_max_num_machines = 2
+simple_max_time_seconds = 60*60*4.0
+simple_mpi_procs = default_mpi_procs 
+
+# Shirley resources
+shirley_max_num_machines = 4
+shirley_max_time_seconds = 60*60*2.0
+shirley_nthreads = 1   # Number of OpenMP threads
+shirley_mpi_procs = 4  # default_mpi_procs / shirley_nthreads
+omp_stacksize = '100m'
+
+###################################################################
+
+if nscf_calculation_pk:
+   print 'Found previous nscf calculation (pk= {})'.format(nscf_calculation_pk)
+if simple_calculation_pk:
+   print 'Found previous simple calculation (pk= {})'.format(simple_calculation_pk)
+
+print 'Wavefunction cutoff is {} Ry (pseudopotential family is {})'.format(wfc_cutoff,pseudo_family)
+elements = structure.get_kind_names()
+num_atoms_per_species = dict( (element,0) for element in elements )
+for site in structure.get_site_kindnames():
+   for element in elements:
+      if site == element:
+         num_atoms_per_species[element] += 1
+
+# Find Z valence 
+z_valence = {}
+pseudo_family_group = UpfData.get_upf_group(pseudo_family)
+for element in elements:
+  for pseudo in pseudo_family_group.nodes:
+    if element == pseudo.element:
+       pseudo_element = pseudo
+       break
+    else:
+       pass
+  z_valence[element] = get_Zvalence_from_pseudo(pseudo_element)
+
+number_of_electrons = 0.0
+for element in elements:
+   number_of_electrons += z_valence[element]*num_atoms_per_species[element]
+
+# Number of bands (at least 30 empty bands)
+occupied_bands = number_of_electrons/2.0
+nbnd = int(occupied_bands) + max(30,int(number_of_electrons/1.333))
+print 'nbnd={} (there are {} occupied bands)'.format(nbnd,int(occupied_bands))
+
+
+# Workflow params
+pw_calculation_set = {'custom_scheduler_commands': 'export OMP_NUM_THREADS=1'}
+nscf_set_dict = {
+              'custom_scheduler_commands': 'export OMP_NUM_THREADS=1',
+              'resources':{'num_machines': dft_max_num_machines,
+                            #'num_mpiprocs_per_machine':16
+                            },
+             "max_wallclock_seconds":dft_max_time_seconds,
+             }
+simple_set_dict = {
+                   'custom_scheduler_commands': custom_scheduler_commands,  
+                   'resources':{'num_machines': simple_max_num_machines,
+                                'num_mpiprocs_per_machine':simple_mpi_procs,
+                            },
+                   'max_wallclock_seconds': simple_max_time_seconds,
+                   }
+shirley_set_dict = {'custom_scheduler_commands': custom_scheduler_commands,
+                    'resources':{'num_machines': shirley_max_num_machines,
+                            'num_mpiprocs_per_machine':shirley_mpi_procs,
+                            },
+                    'max_wallclock_seconds':shirley_max_time_seconds,
+                   }
+shirley_settings = {'CMDLINE':['-c',str(shirley_nthreads)]}
+#shirley_settings = {}
+
+nscf_settings = {'cmdline':['-nk',str(nscf_npools)]}
+nscf_settings.update({ 'FORCE_KPOINTS_LIST':True, 'GAMMA_IMAGES':True})
+
+
+# Pw input dictionary
+pw_input_dict = {'CONTROL': {
+                 'verbosity': 'high',
+                 'tprnfor': True,
+                 'tstress': True,
+                 'disk_io': 'low',
+                 },
+              'SYSTEM': {
+                 'ecutwfc': wfc_cutoff,
+                 'ecutrho': wfc_cutoff*dual,
+                 'occupations': 'smearing',
+                 'degauss': 0.02,
+                 'smearing': 'marzari-vanderbilt',
+                 },
+              'ELECTRONS': {
+                 'mixing_beta': 0.3,
+                 'scf_must_converge': True,   # not needed
+                 },
+
+                 }
+
+nscf_input_dict = {'CONTROL': {
+                             'verbosity': 'high',
+                             'wf_collect': True,
+                             },
+                          'SYSTEM': {
+                             'ecutwfc': wfc_cutoff,
+                             'ecutrho': wfc_cutoff*dual,
+                             'occupations': 'smearing',
+                             'degauss': 0.02,
+                             'smearing': 'marzari-vanderbilt',
+                             'noinv': True,
+                             'nosym': True,
+                             'nbnd': nbnd,
+                             },
+                          'ELECTRONS': {
+                             'mixing_beta': 0.3,
+                             'diago_full_acc': True,
+                             'diagonalization': 'cg',
+                             },
+                             }
+
+simple_input_dict = {'INPUTSIMPLE':
+                     {
+                     's_bands':shirley_threshold,
+                     'nkpoints(1)':interp_kmesh[0],
+                     'nkpoints(2)':interp_kmesh[1],
+                     'nkpoints(3)':interp_kmesh[2],
+                     'nonlocal_commutator' : nonlocal_commutator,
+                      }                     
+                    }
+shirley_input_dict = {'INPUTSIMPLEIP':
+  {
+   'simpleip_in%fermi_degauss' : 0.02205,
+   'simpleip_in%fermi_ngauss' : -1,
+   'simpleip_in%drude_degauss' : 0.00735,             # 0.1 eV
+   'simpleip_in%wmin' : 0.0000735, 
+   'simpleip_in%wmax' : 1.47,
+   'simpleip_in%nw' : 2000,
+   'simpleip_in%inter_broadening' : 0.00735,          # 0.1 eV	
+   #'simpleip_in%inter_broadening' : 0.0147,          
+   'simpleip_in%intra_broadening' : 0.00735,
+   'simpleip_in%interp_grid(1)':interp_kmesh[0],
+   'simpleip_in%interp_grid(2)':interp_kmesh[1],
+   'simpleip_in%interp_grid(3)':interp_kmesh[2],
+   'simpleip_in%nonlocal_commutator' : nonlocal_commutator,
+  }
+}
+
+wf_parameters = {
+                 'pw_codename': pw_codename,
+                 'simple_codename': simple_codename,
+                 'shirley_codename': shirley_codename,
+                 'pseudo_family': pseudo_family,
+                 'structure': structure,
+                 'parameters':{
+                               'pw_kpoints_mesh': pw_kpoints_mesh,
+                               'nscf_kpoints_mesh': nscf_kpoints_mesh,
+                               'dual': dual,
+                               },
+                 'input': { 
+                           },
+
+                 # Self-consistent Pw parameters
+                 'pw_parameters': pw_input_dict,
+                 'pw_calculation_set': pw_calculation_set, 
+                 'pw_input':{'relaxation_scheme': relaxation_scheme,
+                             'finish_with_scf': False,
+#                              'volume_convergence_threshold': volume_conv_thr,
+                             'automatic_parallelization':
+                                                    {
+                                                     'max_wall_time_seconds': dft_max_time_seconds,
+                                                     'target_time_seconds': dft_target_time_seconds,
+                                                     'max_num_machines': dft_max_num_machines
+                                                     },
+                          },                                
+                 # nscf parameters
+                 'nscf_parameters': nscf_input_dict,
+#                  'nscf_interband_kpoints': nscf_interband_kpoints,
+                'nscf_calculation_set': nscf_set_dict,
+                'nscf_settings': nscf_settings,
+                'nscf_input': {
+                                          },
+                 # simple parameters
+                 'simple_parameters': simple_input_dict,
+                 'simple_set_dict': simple_set_dict,
+                 # shirley parameters
+                 'shirley_parameters': shirley_input_dict,
+                 'shirley_set_dict': shirley_set_dict,
+                 'shirley_settings': shirley_settings,
+                 }
+if nscf_calculation_pk:
+  wf_parameters.update({'nscf_calculation': load_node(nscf_calculation_pk)})
+if simple_calculation_pk:
+  wf_parameters.update({'simple_calculation': load_node(simple_calculation_pk)})
+    
+
+wf = ColourWorkflow(params = wf_parameters)
+
+if send:
+    wf.start()
+    print ("Launch ColourWorkflow {}".format(wf.pk))
+    print ("Parameters: {}".format(wf.get_parameters()))
+else:
+    print ("Would launch ColourWorkflow")
+    print ("Parameters: {}".format(wf.get_parameters()))
+
+if send:
+    formula = structure.get_formula()
+    with open('{}_{}_pk.shirley'.format(formula,relaxation_scheme),'a') as o:
+        o.write(str(wf.pk))
+        o.write('\n')
+    sleep(1)   
+
