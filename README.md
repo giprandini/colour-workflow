@@ -29,7 +29,7 @@ scripts:
 - perform the rendering using one of the example scenes freely available for the Mitsuba renderer (https://www.mitsuba-renderer.org/download)
 
 
-#### Acknowledgements
+#### References
 
 G. Prandini, Predicting the reflectivity and colour of metals from first principles (Ph.D. thesis), École Polytechnique Fédérale de Lausanne, 2019
 
