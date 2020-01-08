@@ -32,4 +32,5 @@ scripts:
 #### References
 
 G. Prandini, Predicting the reflectivity and colour of metals from first principles (Ph.D. thesis), École Polytechnique Fédérale de Lausanne, 2019
+G. Prandini, G.-M. Rignanese & N. Marzari, Photorealistic modelling of metals from first principles, npj Comput Mater 5, 129 (2019) 
 
